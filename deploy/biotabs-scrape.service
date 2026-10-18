@@ -1,0 +1,8 @@
+[Unit]
+Description=Biotabs Preis-Scraper
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/biotabs-tracker
+ExecStart=/home/pi/biotabs-tracker/.venv/bin/python /home/pi/biotabs-tracker/scraper.py

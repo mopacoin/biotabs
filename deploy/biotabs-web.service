@@ -1,0 +1,12 @@
+[Unit]
+Description=Biotabs Preis-Webseite
+After=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/biotabs-tracker
+ExecStart=/home/pi/biotabs-tracker/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8000
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
