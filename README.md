@@ -23,6 +23,21 @@ einer lokalen Webseite.
 
 Neuer Shop: Eintrag in `shops.py` ergänzen. Dort stehen auch die entfernten Shops mit Grund.
 
+## Webseite
+
+- **Günstigste Angebote**: je Produkt und Größe der billigste verfügbare Shop, mit Grundpreis und
+  Abstand zum Zweitbilligsten.
+- **Filter** über Produkt-Chips und Formular. Jede Ansicht ist eine eigene URL und lässt sich als
+  Lesezeichen speichern, z. B.
+  - `/?produkt=Bio+PK+5-8` – alle Bio-PK-Angebote, günstigste zuerst
+  - `/?produkt=Bio+PK+5-8&groesse=1+l&verfuegbar=true` – nur lieferbare 1-Liter-Flaschen
+  - `/?produkt=Düngetabletten&sortierung=grundpreis` – Tabletten nach Preis pro Stück, alle Packungsgrößen
+- **Preisänderungen** gegenüber dem vorigen Lauf als ▲/▼ neben dem Preis.
+- **Zustand der Läufe** eingeklappt am Seitenende, bei Warnungen automatisch offen.
+
+JSON-Schnittstelle mit denselben Filtern: `/api/angebote?produkt=Bio%20PK%205-8&groesse=1%20l`
+und `/api/bestpreise`.
+
 ## Installation auf dem Raspberry Pi
 
 ```bash
