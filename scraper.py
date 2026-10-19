@@ -320,6 +320,53 @@ def parse_size(variant, product):
     return None, None
 
 
+# --- Aktionen und Gutscheine auf der Startseite ----------------------------------
+
+PROMO_RE = re.compile(r"\b(?:code|gutschein|coupon|rabatt|sparen|spare)\b|\d\s*%", re.I)
+PROMO_NOISE_RE = re.compile(r"cookie|codeabschnitt|scriptcode|tag manager|speicherdauer|datenschutz|newsletter|gespart|lieferzeit", re.I)
+PERCENT_RE = re.compile(r"(?<![\d.,])(\d{1,2})\s*%")  # nicht "15.92%" als 92 % lesen
+DISCOUNT_WORD_RE = re.compile(r"\brabatt|\bspar(?:en|e)\b|auf alles|gutschein", re.I)
+CODE_RE = re.compile(r"(?i:\b(?:rabatt|gutschein)?code)\s*:?\s*[\"„'»]?([A-Z0-9][A-Z0-9-]{2,19})\b")
+SITEWIDE_RE = re.compile(r"auf alles|gesamte[sn]? sortiment|alle artikel|auf den gesamten|sitewide", re.I)
+
+
+def parse_promos(page_html):
+    """Findet Aktionstexte (meist Banner oben) mit Code oder Prozentrabatt."""
+    soup = BeautifulSoup(page_html, "lxml")
+    for tag in soup(["script", "style", "noscript", "svg"]):
+        tag.decompose()
+    text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+    segments = [s.strip() for s in re.split(r"[·•✔✓|]|(?<=[.!?])\s", text)]
+    # "7% auf alles · Code PP7": Rabatt und Code stehen in zwei Abschnitten
+    for i in range(len(segments) - 1):
+        if PERCENT_RE.search(segments[i]) and not CODE_RE.search(segments[i]) and CODE_RE.match(segments[i + 1]):
+            segments[i] = f"{segments[i]} · {CODE_RE.match(segments[i + 1]).group(0)}"
+    promos = {}
+    for segment in segments:
+        if not (8 < len(segment) < 200) or not PROMO_RE.search(segment) or PROMO_NOISE_RE.search(segment):
+            continue
+        code = CODE_RE.search(segment)
+        percent = PERCENT_RE.search(segment)
+        if not code and not (percent and DISCOUNT_WORD_RE.search(segment)):
+            continue
+        # Auf den Bereich um Rabatt und Code kürzen, Cookie- und Menütexte davor/danach weglassen
+        spans = [m.span() for m in (code, percent) if m]
+        start, end = min(s for s, _ in spans), max(e for _, e in spans)
+        start = segment.rfind(" ", 0, max(0, start - 30)) + 1 if start > 30 else 0
+        end = segment.find(" ", end + 25) if segment.find(" ", end + 25) > 0 else len(segment)
+        promo = {
+            # Reste des Cookie-Banners davor abschneiden ("Dauerhaft zustimmen Jetzt sparen …")
+            "text": re.sub(r"^.*\b(?:zustimmen|akzeptieren|ablehnen|konfigurieren)\s+", "", segment[start:end], flags=re.I).strip(" ›*!"),
+            "code": code.group(1) if code else None,
+            "percent": float(percent.group(1)) if percent else None,
+            "sitewide": bool(SITEWIDE_RE.search(segment)),
+        }
+        key = promo["code"] or promo["text"]
+        if key not in promos or (promo["percent"] and not promos[key]["percent"]):
+            promos[key] = promo
+    return sorted(promos.values(), key=lambda p: (p["code"] is None, not p["sitewide"]))[:5]
+
+
 # --- Datenbank und Ablauf -------------------------------------------------------
 
 
@@ -353,6 +400,14 @@ def db_connect():
             discovered_at TEXT NOT NULL,
             PRIMARY KEY (shop, url)
         );
+        CREATE TABLE IF NOT EXISTS promos (
+            checked_at TEXT NOT NULL,
+            shop TEXT NOT NULL,
+            text TEXT NOT NULL,
+            code TEXT,
+            percent REAL,
+            sitewide INTEGER
+        );
         CREATE TABLE IF NOT EXISTS runs (
             checked_at TEXT NOT NULL,
             shop TEXT NOT NULL,
@@ -375,7 +430,12 @@ def product_urls(con, shop, force):
 
 
 def scrape_shop(shop, urls):
-    """Läuft im eigenen Thread. Gibt (urls, offers, errors) zurück, schreibt nichts in die DB."""
+    """Läuft im eigenen Thread. Gibt (urls, offers, errors, promos) zurück, schreibt nichts in die DB."""
+    try:
+        promos = parse_promos(shop.get(shop.home).text)
+    except Exception as e:
+        log.warning("%s: Startseite für Aktionen nicht lesbar: %s", shop.name, e)
+        promos = []
     if urls is None:
         urls = shop.discover_product_urls()
         log.info("%s: %d Produkt-URLs gefunden", shop.name, len(urls))
@@ -391,7 +451,7 @@ def scrape_shop(shop, urls):
             offers.extend(found)
         except Exception as e:
             errors.append((url, str(e)))
-    return urls, offers, errors
+    return urls, offers, errors, promos
 
 
 def health_warning(con, shop, offers, errors, pages):
@@ -418,7 +478,13 @@ def run(shop_names=None, force_discovery=False):
     with ThreadPoolExecutor(max_workers=len(shops) or 1) as pool:
         results = dict(zip([s.name for s in shops], pool.map(lambda s: scrape_shop(s, jobs[s.name]), shops)))
 
-    for name, (urls, found, errors) in results.items():
+    for name, (urls, found, errors, promos) in results.items():
+        con.executemany(
+            "INSERT INTO promos VALUES (?,?,?,?,?,?)",
+            [(now, name, p["text"], p["code"], p["percent"], p["sitewide"]) for p in promos],
+        )
+        for p in promos:
+            log.info("%s: Aktion: %s", name, p["text"])
         if jobs[name] is None:
             con.execute("DELETE FROM product_urls WHERE shop = ?", (name,))
             con.executemany("INSERT INTO product_urls VALUES (?,?,?)", [(name, u, now) for u in urls])

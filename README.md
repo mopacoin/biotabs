@@ -35,8 +35,28 @@ Neuer Shop: Eintrag in `shops.py` ergänzen. Dort stehen auch die entfernten Sho
 - **Preisänderungen** gegenüber dem vorigen Lauf als ▲/▼ neben dem Preis.
 - **Zustand der Läufe** eingeklappt am Seitenende, bei Warnungen automatisch offen.
 
-JSON-Schnittstelle mit denselben Filtern: `/api/angebote?produkt=Bio%20PK%205-8&groesse=1%20l`
-und `/api/bestpreise`.
+- **Einzeln inkl. Versand**: was ein Artikel kostet, wenn man nur ihn bestellt.
+- **Warenkorb-Rechner** (`/#warenkorb`): Produkte, Größen und Mengen wählen; gesucht wird die insgesamt
+  günstigste Aufteilung auf einen oder mehrere Shops. Berücksichtigt werden Versandkosten nach Gewicht und
+  Warenwert, versandkostenfrei-Grenzen, Mindestbestellwerte und Gutscheine, die für das ganze Sortiment gelten.
+  Die Suche ist exakt (geprüft gegen eine vollständige Suche über alle Zuordnungen); je Produkt werden die
+  10 günstigsten Shops betrachtet. Der Warenkorb bleibt im Browser gespeichert.
+- **Shops: Versand und Aktionen**: Versandkosten mit Quelle und die bei jedem Lauf erkannten Aktionen.
+
+JSON-Schnittstelle: `/api/angebote?produkt=Bio%20PK%205-8&groesse=1%20l`, `/api/bestpreise`,
+`/api/versand` und `/api/aktionen`.
+
+## Versandkosten und Aktionen
+
+- **Versandkosten** stehen in `shops.py` (`SHIPPING`), von Hand aus den Versandseiten der Shops übernommen
+  (Stand 19.10.2026). Sie ändern sich selten, sollten aber gelegentlich geprüft werden. Bei hobbygrow,
+  grungarten und chiligrow nennt der Shop keine Beträge; dort wird pauschal mit 8 € gerechnet
+  (`DEFAULT_SHIPPING`), auf der Seite als geschätzt markiert. Das gilt auch für neue Shops ohne Eintrag.
+- **Versandgewicht** wird aus der Packungsgröße geschätzt (Tablette ca. 21 g, Flüssigkeit ca. 1,1 kg/l).
+  Das betrifft nur Shops mit Gewichtsstaffeln.
+- **Aktionen** liest der Scraper bei jedem Lauf von der Startseite (Banner-Texte mit Code oder Prozent-Rabatt).
+  In den Warenkorb-Rechner fließen nur Codes ein, die laut Text "auf alles" gelten. Bedingungen wie
+  ausgenommene Marken oder Mindestwerte kann die Erkennung nicht prüfen.
 
 ## Installation auf dem Raspberry Pi
 
