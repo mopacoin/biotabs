@@ -2,6 +2,6 @@
 __pycache__/
 # Laufzeitdaten: entstehen auf dem Pi bei jedem Lauf neu
 prices.db
-scrape.log
+*.log
 vorschau*
 biotabs-tracker.zip

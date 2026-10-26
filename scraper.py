@@ -388,6 +388,7 @@ def db_connect():
             price_per_unit REAL,
             available INTEGER
         );
+        CREATE INDEX IF NOT EXISTS prices_shop_checked ON prices (shop, checked_at);
         CREATE TABLE IF NOT EXISTS errors (
             checked_at TEXT NOT NULL,
             shop TEXT NOT NULL,

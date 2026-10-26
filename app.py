@@ -4,7 +4,8 @@ import json
 import re
 import sqlite3
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -15,6 +16,7 @@ from scraper import DB_PATH, db_connect
 from shops import SHIPPING, estimate_weight, shipping_cost
 
 WARENKORB_JS = Path(__file__).with_name("warenkorb.js")
+VERLAUF_JS = Path(__file__).with_name("verlauf.js")
 
 app = FastAPI()
 
@@ -32,19 +34,21 @@ PRODUCT_GROUPS = [
 GROUP_NAMES = [name for name, _ in PRODUCT_GROUPS]
 
 LATEST_SQL = """
+WITH last AS (SELECT shop, MAX(checked_at) AS checked_at FROM prices GROUP BY shop)
 SELECT shop, url, product, variant, price, pack_size, pack_unit, price_per_unit, available, checked_at
-FROM prices
-WHERE checked_at = (SELECT MAX(checked_at) FROM prices p2 WHERE p2.shop = prices.shop)
+FROM prices JOIN last USING (shop, checked_at)
 """
 
 # Letzter Preis desselben Angebots vor dem aktuellen Lauf des Shops
 PREVIOUS_SQL = """
-SELECT shop, product, COALESCE(variant, ''), price
-FROM prices p
-WHERE checked_at = (
-    SELECT MAX(checked_at) FROM prices p2
-    WHERE p2.shop = p.shop AND p2.checked_at < (SELECT MAX(checked_at) FROM prices p3 WHERE p3.shop = p.shop)
+WITH last AS (SELECT shop, MAX(checked_at) AS m FROM prices GROUP BY shop),
+prev AS (
+    SELECT p.shop, MAX(p.checked_at) AS checked_at
+    FROM prices p JOIN last ON last.shop = p.shop AND p.checked_at < last.m
+    GROUP BY p.shop
 )
+SELECT shop, product, COALESCE(variant, ''), price
+FROM prices JOIN prev USING (shop, checked_at)
 """
 
 # Aktionen aus dem letzten Lauf je Shop (ein Shop ohne Aktion im letzten Lauf zeigt keine alte an)
@@ -61,7 +65,18 @@ WHERE checked_at = (SELECT MAX(checked_at) FROM runs r2 WHERE r2.shop = runs.sho
 ORDER BY warning IS NULL, shop
 """
 
+# Gesamte Historie für die Tiefstpreise, chronologisch
+HISTORY_SQL = """
+SELECT checked_at, shop, product, price, pack_size, pack_unit
+FROM prices
+WHERE available AND price IS NOT NULL AND pack_size IS NOT NULL
+ORDER BY checked_at
+"""
 
+ALARM_DAYS = 7  # so lange bleibt ein neuer Tiefstpreis als Alarm oben auf der Seite
+
+
+@lru_cache(maxsize=4096)
 def product_group(product):
     # Bestandteile zuerst prüfen, sonst landet "BioTabs Bactrex" über "^bio tabs" bei den Tabletten
     for name, pattern in PRODUCT_GROUPS[1:] + PRODUCT_GROUPS[:1]:
@@ -114,6 +129,59 @@ def load_promos():
         promos[shop].append({"text": text, "code": code, "percent": percent, "sitewide": bool(sitewide)})
     con.close()
     return dict(promos)
+
+
+_lows_cache = {"key": None, "lows": None}
+
+
+def load_lows():
+    """Allzeit-Tiefstpreis je Produktgruppe und Größe über alle Shops (nur verfügbare Angebote).
+
+    "since" ist der Lauf, in dem der Tiefstpreis zuerst erreicht wurde, "previous" der Tiefstpreis davor
+    (None, solange er seit der ersten Beobachtung nicht unterboten wurde). Ergebnis wird bis zum nächsten
+    Lauf zwischengespeichert, weil dafür die ganze Historie gelesen wird.
+    """
+    db_connect().close()
+    con = sqlite3.connect(DB_PATH)
+    key = con.execute("SELECT COUNT(*), MAX(id) FROM prices").fetchone()
+    if _lows_cache["key"] != key:
+        lows = {}
+        for checked, shop, product, price, size, unit in con.execute(HISTORY_SQL):
+            group = product_group(product)
+            if not group:
+                continue
+            k = (group, unit, size)
+            low = lows.get(k)
+            if low is None:
+                lows[k] = {"price": price, "since": checked, "shop": shop, "previous": None}
+            elif price < low["price"] - 0.005:
+                lows[k] = {"price": price, "since": checked, "shop": shop, "previous": low["price"]}
+        _lows_cache.update(key=key, lows=lows)
+    con.close()
+    return _lows_cache["lows"]
+
+
+def low_alarms(rows, lows):
+    """Neue Tiefstpreise der letzten ALARM_DAYS Tage, die das aktuelle Bestangebot noch hält."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=ALARM_DAYS)
+    alarms = []
+    for r in rows:
+        low, best = lows.get((r["group"], r["unit"], r["size"])), r["best"]
+        if (low and best and low["previous"] is not None and datetime.fromisoformat(low["since"]) >= cutoff
+                and best["price"] <= low["price"] + 0.005):
+            alarms.append({**r, "low": low})
+    return alarms
+
+
+def load_history(shop, product, variant):
+    con = sqlite3.connect(DB_PATH)
+    rows = con.execute(
+        "SELECT checked_at, price, available FROM prices "
+        "WHERE shop = ? AND product = ? AND COALESCE(variant, '') = ? AND price IS NOT NULL ORDER BY checked_at",
+        (shop, product, variant),
+    ).fetchall()
+    con.close()
+    return [{"t": t, "price": price, "available": bool(available)} for t, price, available in rows]
 
 
 def single_price_with_shipping(o):
@@ -190,12 +258,33 @@ def api_best():
     ]
 
 
+@app.get("/api/tiefstpreise")
+def api_lows():
+    offers, _ = load_offers()
+    lows = load_lows()
+    alarm_keys = {(a["group"], a["unit"], a["size"]) for a in low_alarms(best_offers(offers), lows)}
+    return [
+        {"group": g, "size_label": size_label(s, u), **low, "alarm": (g, u, s) in alarm_keys}
+        for (g, u, s), low in sorted(lows.items(), key=lambda kv: (GROUP_NAMES.index(kv[0][0]), kv[0][1] or "", kv[0][2]))
+    ]
+
+
+@app.get("/api/verlauf")
+def api_history(shop: str, product: str, variant: str = ""):
+    """Preisverlauf eines Angebots (Shop + Produkt + Variante) über alle Läufe."""
+    return load_history(shop, product, variant)
+
+
 # --- Webseite -------------------------------------------------------------------
 
 
 def local_time(iso):
     """UTC-Zeitstempel aus der DB in der Ortszeit des Rechners (auf dem Pi: Europe/Berlin)."""
     return datetime.fromisoformat(iso).astimezone().strftime("%d.%m.%Y %H:%M") if iso else None
+
+
+def local_date(iso):
+    return datetime.fromisoformat(iso).astimezone().strftime("%d.%m.%Y") if iso else None
 
 
 def esc(value):
@@ -236,7 +325,36 @@ def with_shipping(o):
     return f"{euro(total)}{mark}"
 
 
-def render_best(rows, produkt, promos):
+def history_button(o):
+    return (
+        f" <button type=button class=hist data-shop='{esc(o['shop'])}' data-product='{esc(o['product'])}'"
+        f" data-variant='{esc(o['variant'] or '')}' data-size='{esc(o['size_label'])}'"
+        f" aria-label='Preisverlauf {esc(o['product'])} {esc(o['size_label'])} bei {esc(o['shop'])}'>Verlauf</button>"
+    )
+
+
+def low_cell(low, best):
+    if not low:
+        return "–"
+    if best and best["price"] <= low["price"] + 0.005:
+        return f"<span class=lowmark>Tiefstpreis</span> <span class=muted>seit {esc(local_date(low['since']))}</span>"
+    return f"{euro(low['price'])} <span class=muted>{esc(local_date(low['since']))}, {esc(low['shop'])}</span>"
+
+
+def render_alarms(alarms):
+    if not alarms:
+        return ""
+    items = "".join(
+        f"<li><b>{esc(a['group'])} {esc(a['size_label'])}</b>: {euro(a['best']['price'])} bei "
+        f"<a href='{esc(a['best']['url'])}'>{esc(a['best']['shop'])}</a>"
+        f" <span class=muted>(vorher tiefstens {euro(a['low']['previous'])}, neu seit {esc(local_date(a['low']['since']))})</span>"
+        f"{history_button(a['best'])}</li>"
+        for a in alarms
+    )
+    return f"<div class=alarm role=status><b>Tiefstpreis-Alarm</b> – so günstig wie noch nie:<ul>{items}</ul></div>"
+
+
+def render_best(rows, produkt, promos, lows):
     out, current = [], None
     for r in rows:
         if produkt and r["group"] != produkt:
@@ -246,6 +364,7 @@ def render_best(rows, produkt, promos):
             current = r["group"]
             group_cell = f"<a href='{esc(link(produkt=r['group']))}'>{esc(r['group'])}</a>"
         b, s = r["best"], r["second"]
+        low = lows.get((r["group"], r["unit"], r["size"]))
         size_link = f"<a href='{esc(link(produkt=r['group'], groesse=r['size_label']))}'>{esc(r['size_label'])}</a>"
         if b:
             if not s:
@@ -257,12 +376,14 @@ def render_best(rows, produkt, promos):
             out.append(
                 f"<tr><td>{group_cell}</td><td>{size_link}</td>"
                 f"<td><a href='{esc(b['url'])}'>{esc(b['shop'])}</a>{coupon_badge(b['shop'], promos)}</td>"
-                f"<td class=num><b>{euro(b['price'])}</b>{change(b)}</td><td class=num>{with_shipping(b)}</td><td class=num>{per_unit(b)}</td>"
+                f"<td class=num><b>{euro(b['price'])}</b>{change(b)}{history_button(b)}</td><td class=num>{with_shipping(b)}</td><td class=num>{per_unit(b)}</td>"
+                f"<td>{low_cell(low, b)}</td>"
                 f"<td class=muted>{saving}</td><td class=num>{r['count_available']}/{r['count']}</td></tr>"
             )
         else:
             out.append(
-                f"<tr class=na><td>{group_cell}</td><td>{size_link}</td><td colspan=5>überall ausverkauft</td>"
+                f"<tr class=na><td>{group_cell}</td><td>{size_link}</td><td colspan=4>überall ausverkauft</td>"
+                f"<td>{low_cell(low, None)}</td><td></td>"
                 f"<td class=num>0/{r['count']}</td></tr>"
             )
     return "".join(out)
@@ -275,7 +396,7 @@ def render_offers(offers):
             f"<tr{'' if o['available'] else ' class=na'}><td>{esc(o['group'])}</td><td>{esc(o['size_label'])}</td>"
             f"<td>{esc(o['shop'])}</td><td><a href='{esc(o['url'])}'>{esc(o['product'])}</a>"
             f"{' <span class=muted>(' + esc(o['variant']) + ')</span>' if o['variant'] else ''}</td>"
-            f"<td class=num>{euro(o['price'])}{change(o)}</td><td class=num>{per_unit(o)}</td>"
+            f"<td class=num>{euro(o['price'])}{change(o)}{history_button(o)}</td><td class=num>{per_unit(o)}</td>"
             f"<td>{'ja' if o['available'] else 'nein'}</td></tr>"
         )
     return "".join(rows)
@@ -333,6 +454,9 @@ def options(values, selected, empty_label):
 def index(produkt: str | None = None, groesse: str | None = None, verfuegbar: bool = False, sortierung: str = "groesse"):
     offers, runs = load_offers()
     promos = load_promos()
+    lows = load_lows()
+    best = best_offers(offers)
+    alarms = low_alarms(best, lows)
     produkt = produkt if produkt in GROUP_NAMES else None
     sizes = sorted(
         {(o["unit"] or "", o["size"] or 0, o["size_label"]) for o in offers if o["size"] is not None and (not produkt or o["group"] == produkt)}
@@ -368,17 +492,31 @@ details summary{{cursor:pointer;margin-top:28px;font-weight:600}}
 .cart-shop{{border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-top:8px;overflow-x:auto}}
 .cart-shop h4{{margin:0 0 4px;display:flex;justify-content:space-between;gap:12px}}
 .sr{{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}}
+.alarm{{border:2px solid var(--down);border-radius:8px;padding:8px 12px;margin:12px 0}} .alarm ul{{margin:4px 0 0;padding-left:20px}}
+.lowmark{{font-size:12px;border:1px solid var(--down);color:var(--down);border-radius:4px;padding:0 4px;white-space:nowrap}}
+button.hist{{font:inherit;font-size:12px;padding:0 6px;margin-left:4px;border:1px solid var(--line);border-radius:4px;background:none;color:inherit;cursor:pointer}}
+button.hist:hover{{border-color:var(--fg)}}
+dialog{{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:8px;width:min(760px,calc(100vw - 32px));padding:16px}}
+dialog::backdrop{{background:rgba(0,0,0,.4)}}
+.hist-head{{display:flex;justify-content:space-between;align-items:center;gap:12px}} .hist-head h3{{margin:0}}
+.hist-head button{{font:inherit;background:none;border:0;color:inherit;cursor:pointer;font-size:18px}}
+.hist-stats{{display:flex;flex-wrap:wrap;gap:4px 24px;margin:8px 0}} .hist-stats b{{font-size:18px}}
+.hist-chart{{position:relative}} .hist-chart svg{{display:block;width:100%;height:auto}}
+.hist-tip{{position:absolute;pointer-events:none;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:13px;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,.15)}}
+:root{{--series:#2a78d6;--grid:#e6e6e3}}
+@media (prefers-color-scheme: dark){{:root{{--series:#3987e5;--grid:#2c2c2a}}}}
 </style></head><body>
 <h1>Biotabs Preise</h1>
 <p class=muted>Letzter Lauf: {esc(local_time(last_run))} · {len(offers)} Angebote aus {len({o['shop'] for o in offers})} Shops
 {f" · <b>{warnings} Shop(s) mit Warnung</b>" if warnings else ""} · Preise inkl. MwSt.</p>
+{render_alarms(alarms)}
 
 <div class=chips><a href='/' class='{'' if produkt else 'on'}'>Alle</a>{''.join(
     f"<a href='{esc(link(produkt=g))}' class='{'on' if g == produkt else ''}'>{esc(g)}</a>" for g in GROUP_NAMES)}</div>
 
 <h2>Günstigste Angebote{' – ' + esc(produkt) if produkt else ''}</h2>
-<div class=wrap><table><tr><th>Produkt</th><th>Größe</th><th>Günstigster Shop</th><th>Preis</th><th>einzeln inkl. Versand</th><th>Grundpreis</th><th>Ersparnis</th><th>verfügbar</th></tr>
-{render_best(best_offers(offers), produkt, promos) or '<tr><td colspan=8>Noch keine Daten.</td></tr>'}</table></div>
+<div class=wrap><table><tr><th>Produkt</th><th>Größe</th><th>Günstigster Shop</th><th>Preis</th><th>einzeln inkl. Versand</th><th>Grundpreis</th><th>Tiefstpreis bisher</th><th>Ersparnis</th><th>verfügbar</th></tr>
+{render_best(best, produkt, promos, lows) or '<tr><td colspan=9>Noch keine Daten.</td></tr>'}</table></div>
 
 <h2 id=warenkorb>Warenkorb-Rechner</h2>
 <p class=muted>Produkte und Mengen wählen: Der Rechner sucht die insgesamt günstigste Aufteilung auf einen oder mehrere Shops,
@@ -412,6 +550,15 @@ Bedingungen (z. B. ausgenommene Marken) stehen im Shop.</p>
 <details{' open' if warnings else ''}><summary>Zustand letzter Lauf ({len(runs)} Shops{f', {warnings} Warnung(en)' if warnings else ', alle ok'})</summary>
 <div class=wrap><table><tr><th>Shop</th><th>Geprüft</th><th>Seiten</th><th>Preise</th><th>Fehler</th><th>Status</th></tr>
 {render_runs(runs) or '<tr><td colspan=6>Noch kein Lauf.</td></tr>'}</table></div></details>
+<dialog id=hist-dialog aria-labelledby=hist-title>
+<div class=hist-head><h3 id=hist-title>Preisverlauf</h3><button type=button id=hist-close aria-label=Schließen>✕</button></div>
+<p id=hist-sub class=muted></p>
+<div id=hist-stats class=hist-stats></div>
+<div id=hist-chart class=hist-chart></div>
+<p class=muted>Hohler Punkt: ausverkauft · gestrichelte Linie: Tiefstpreis, als der Artikel lieferbar war</p>
+<details><summary>Als Tabelle</summary><div class=wrap><table id=hist-table></table></div></details>
+</dialog>
 <script>const DATA = {cart_data(offers, promos)};</script>
 <script>{WARENKORB_JS.read_text(encoding="utf-8")}</script>
+<script>{VERLAUF_JS.read_text(encoding="utf-8")}</script>
 </body></html>"""

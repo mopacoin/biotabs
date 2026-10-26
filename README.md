@@ -33,6 +33,13 @@ Neuer Shop: Eintrag in `shops.py` ergänzen. Dort stehen auch die entfernten Sho
   - `/?produkt=Bio+PK+5-8&groesse=1+l&verfuegbar=true` – nur lieferbare 1-Liter-Flaschen
   - `/?produkt=Düngetabletten&sortierung=grundpreis` – Tabletten nach Preis pro Stück, alle Packungsgrößen
 - **Preisänderungen** gegenüber dem vorigen Lauf als ▲/▼ neben dem Preis.
+- **Tiefstpreis bisher** je Produkt und Größe über alle Shops und alle Läufe, gezählt werden nur lieferbare
+  Angebote. Ist das aktuelle Bestangebot so günstig wie der Tiefstpreis, steht dort *Tiefstpreis*.
+- **Tiefstpreis-Alarm** oben auf der Seite: Wurde der bisherige Tiefstpreis in den letzten 7 Tagen
+  (`ALARM_DAYS` in `app.py`) unterboten und ist das aktuelle Bestangebot noch so günstig, erscheint es dort.
+  Die erste Beobachtung eines Produkts löst keinen Alarm aus.
+- **Preisverlauf**: Der Button *Verlauf* neben jedem Preis zeigt den Preis dieses Angebots über alle Läufe,
+  mit Tiefst-/Höchstpreis, ausverkauften Läufen und den Preisänderungen als Tabelle.
 - **Zustand der Läufe** eingeklappt am Seitenende, bei Warnungen automatisch offen.
 
 - **Einzeln inkl. Versand**: was ein Artikel kostet, wenn man nur ihn bestellt.
@@ -44,7 +51,7 @@ Neuer Shop: Eintrag in `shops.py` ergänzen. Dort stehen auch die entfernten Sho
 - **Shops: Versand und Aktionen**: Versandkosten mit Quelle und die bei jedem Lauf erkannten Aktionen.
 
 JSON-Schnittstelle: `/api/angebote?produkt=Bio%20PK%205-8&groesse=1%20l`, `/api/bestpreise`,
-`/api/versand` und `/api/aktionen`.
+`/api/versand`, `/api/aktionen`, `/api/tiefstpreise` und `/api/verlauf?shop=…&product=…&variant=…`.
 
 ## Versandkosten und Aktionen
 

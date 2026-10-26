@@ -1,8 +1,8 @@
 [Unit]
-Description=Biotabs Scraper zweimal täglich
+Description=Biotabs Scraper zweimal täglich (12 und 18 Uhr)
 
 [Timer]
-OnCalendar=*-*-* 06:00:00
+OnCalendar=*-*-* 12:00:00
 OnCalendar=*-*-* 18:00:00
 Persistent=true
 
