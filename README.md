@@ -1,6 +1,6 @@
 # Biotabs Preis-Tracker
 
-Ruft zweimal täglich die Preise aller BioTabs-Produkte (Düngetabletten, Bio PK 5-8, Silicium Flash,
+Ruft zweimal täglich die Preise aller BioTabs-Produkte (Düngetabletten, Bio PK 5-8, PK Booster Compost Tea, Silicium Flash,
 Bactrex, Orgatrex, Startrex, Mycotrex) in jeder Größe bei deutschen Shops ab und zeigt sie auf
 einer lokalen Webseite.
 
@@ -14,8 +14,8 @@ einer lokalen Webseite.
   - *WooCommerce*: alle Varianten stehen als JSON im Attribut `data-product_variations`.
   - Sonst: JSON-LD (auch `ProductGroup` mit `hasVariant`) bzw. Microdata. Eine reine Preisspanne
     ("ab 9,90 €") wird als Fehler gemeldet, nicht gespeichert.
-- **Produktfilter** auf Namensebene: nur Düngetabletten, Bio PK 5-8, Silicium Flash, Bactrex,
-  Orgatrex, Startrex, Mycotrex. Sets, Guerilla Tabs, Boom Boom Spray, PK Booster usw. fallen raus.
+- **Produktfilter** auf Namensebene: nur Düngetabletten, Bio PK 5-8, PK Booster Compost Tea, Silicium Flash, Bactrex,
+  Orgatrex, Startrex, Mycotrex. Sets, Guerilla Tabs, Boom Boom Spray usw. fallen raus.
 - **Grundpreis** in €/Stück, €/kg oder €/l, damit Größen und Shops vergleichbar sind.
 - **Shops parallel**, je Shop eine Anfrage alle 5 Sekunden, `robots.txt` wird beachtet.
 - **Zustandsprüfung**: Liefert ein Shop keine Preise oder weniger als die Hälfte des letzten Laufs,

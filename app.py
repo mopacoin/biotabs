@@ -25,6 +25,7 @@ app = FastAPI()
 PRODUCT_GROUPS = [
     ("Düngetabletten", re.compile(r"tablett|\btabs\b|^bio\s*tabs\b", re.I)),
     ("Bio PK 5-8", re.compile(r"pk\s*5-8", re.I)),
+    ("PK Booster", re.compile(r"pk[-\s]*booster", re.I)),
     ("Silicium Flash", re.compile(r"sili[cz]i?um", re.I)),
     ("Bactrex", re.compile(r"bactrex", re.I)),
     ("Orgatrex", re.compile(r"orgatrex", re.I)),
@@ -95,17 +96,31 @@ def size_label(amount, unit):
     return f"{amount:g} {unit}".replace(".", ",")
 
 
+# PK Booster: Shops nennen dieselben Gebinde mal nach Gewicht, mal nach Volumen (650 g = 750 ml, 2 kg = 2,5 l, 8 kg = 9 l)
+BOOSTER_SIZES = {("l", 0.75): 0.65, ("l", 2.5): 2.0, ("l", 9.0): 8.0, ("kg", 0.75): 0.65, ("kg", 2.5): 2.0, ("kg", 9.0): 8.0}
+
+
+def normalize_size(group, size, unit):
+    if group == "PK Booster" and (unit, size) in BOOSTER_SIZES:
+        return BOOSTER_SIZES[(unit, size)], "kg"
+    return size, unit
+
+
 def load_offers():
     db_connect().close()  # legt Tabellen an, falls noch kein Lauf stattfand
     con = sqlite3.connect(DB_PATH)
     previous = {(s, p, v): price for s, p, v, price in con.execute(PREVIOUS_SQL)}
     offers = []
     for shop, url, product, variant, price, size, unit, per_unit, available, checked in con.execute(LATEST_SQL):
+        group = product_group(product)
+        new_size, unit = normalize_size(group, size, unit)
+        if new_size != size:
+            size, per_unit = new_size, round(price / new_size, 4)
         offers.append({
             "shop": shop,
             "url": url,
             "product": product,
-            "group": product_group(product),
+            "group": group,
             "variant": variant,
             "price": price,
             "size": size,
@@ -150,6 +165,7 @@ def load_lows():
             group = product_group(product)
             if not group:
                 continue
+            size, unit = normalize_size(group, size, unit)
             k = (group, unit, size)
             low = lows.get(k)
             if low is None:

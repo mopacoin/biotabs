@@ -33,13 +33,13 @@ DISCOVERY_MAX_AGE = timedelta(days=7)
 PRODUCT_RE = re.compile(r"bio[-_ ]?tabs|bio[-_ ]?pk|sili[cz]ium[-_ ]?flash|bactrex|orgatrex|startrex|mycotrex", re.I)
 # Gehört nicht zur Produktliste, obwohl der Name "biotabs" enthält
 EXCLUDE_RE = re.compile(
-    r"guerr?illa|boom[-_]?boom|juice|feeding|charts|nutrients/?$|marke|starter|perfect|booster|clipper|autopot|kit|box|guide"
+    r"guerr?illa|boom[-_]?boom|juice|feeding|charts|nutrients/?$|marke|starter|perfect|(?<!pk-)(?<!pk_)booster|clipper|autopot|kit|box|guide"
     r"|/collections/|product-category|/kategorie/|/blogs?/",
     re.I,
 )
 # Filter auf Produktnamen: nur die gewünschten Produkte, keine Sets, Zubehör oder andere BioTabs-Artikel
-TARGET_RE = re.compile(r"bio\s*pk|\bpk\s*5-8|sili[cz]i?um|bactrex|orgatrex|startrex|mycotrex|tablett|\btabs\b|^bio\s*tabs\b.*\d\s*st", re.I)
-NOT_TARGET_RE = re.compile(r"guerr?illa|boom|pk[-\s]*booster|compost|start(?:er)?pack|poster|l[üu]ftung|\bset\b|kit\b|box", re.I)
+TARGET_RE = re.compile(r"bio\s*pk|pk[-\s]*booster|\bpk\s*5-8|sili[cz]i?um|bactrex|orgatrex|startrex|mycotrex|tablett|\btabs\b|^bio\s*tabs\b.*\d\s*st", re.I)
+NOT_TARGET_RE = re.compile(r"guerr?illa|boom|start(?:er)?pack|poster|l[üu]ftung|\bset\b|kit\b|box", re.I)
 SIZE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(kg|gr|g|gramm|ml|l|liter|st[üu]ck|stk|st|tabs?|tabletten)(?![a-zäöü])", re.I)
 
 log = logging.getLogger("scraper")
